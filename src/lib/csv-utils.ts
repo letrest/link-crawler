@@ -11,7 +11,7 @@ export interface LinkData {
 }
 
 export function generateCSV(links: LinkData[]): string {
-  const headers = ['URL', 'Status', 'Status Text', 'Hit', 'All Headers', 'Error'];
+  const headers = ['URL', 'Status', 'Status Text', 'Chache Status', 'All Headers', 'Error'];
   
   const rows = links.map((link) => {
     const allHeaders = link.headers
