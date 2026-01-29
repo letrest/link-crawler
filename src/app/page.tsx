@@ -74,14 +74,13 @@ export default function Home() {
 
         const data = await response.json();
 
-        const hit = (data.headers?.['x-cache'] && data.headers?.['x-cache'].includes('HIT')) ? true : false;
+        const hit = (data.headers?.['Age'] && data.headers?.['Age'] > 0) || (data.headers?.['x-cache'] && data.headers?.['x-cache'].includes('HIT')) ? true : false;
 
         const linkData: LinkData = {
           url: data.url,
           status: data.status,
           statusText: data.statusText,
           contentLength: data.headers['content-length'],
-          lastModified: data.headers['last-modified'],
           hit: hit ? true : false,
           headers: data.headers || {},
           body: data.body || undefined,

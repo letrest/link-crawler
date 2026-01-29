@@ -11,7 +11,7 @@ export interface LinkData {
 }
 
 export function generateCSV(links: LinkData[]): string {
-  const headers = ['URL', 'Status', 'Status Text', 'All Headers', 'Error'];
+  const headers = ['URL', 'Status', 'Status Text', 'Hit', 'All Headers', 'Error'];
   
   const rows = links.map((link) => {
     const allHeaders = link.headers
@@ -23,10 +23,11 @@ export function generateCSV(links: LinkData[]): string {
       `"${link.url.replace(/"/g, '""')}"`,
       link.status,
       `"${link.statusText.replace(/"/g, '""')}"`,
+      `"${link.hit === true ? 'HIT' : 'MISS' }"`,
       `"${allHeaders.replace(/"/g, '""')}"`,
     //   `"${allHeaders["ncontent-legth"] || ''}"`,
     //   `"${allHeaders['lastModified'] || ''}"`,
-      `"${link.hit || ''}"`,
+      
       `"${(link.error || '').replace(/"/g, '""')}"`,
     ];
   });
