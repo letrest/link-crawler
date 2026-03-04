@@ -30,28 +30,71 @@ export default function Home() {
     setCrawling(true);
 
     try {
-      const response = await fetch('/api/crawl', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url }),
-      });
+      // support multiple seed URLs separated by commas or whitespace
+      const seeds = url
+        .split(/[\s,]+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        setError(data.error || 'Failed to crawl URL');
+      if (seeds.length === 0) {
+        setError('Please provide at least one URL');
         setLoading(false);
         setCrawling(false);
         return;
       }
 
-      setTotalLinks(data.totalLinks);
+      // validate seeds
+      for (const s of seeds) {
+        try {
+          // eslint-disable-next-line no-new
+          new URL(s);
+        } catch (err) {
+          setError(`Invalid URL: ${s}`);
+          setLoading(false);
+          setCrawling(false);
+          return;
+        }
+      }
+
+      // fetch crawl results for each seed concurrently
+      const crawlPromises = seeds.map((seed) =>
+        fetch('/api/crawl', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: seed }),
+        }).then(async (res) => {
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'Failed to crawl URL');
+          return data;
+        })
+      );
+
+      const settled = await Promise.allSettled(crawlPromises);
+
+      let allLinks: string[] = [];
+      let reportedTotal = 0;
+
+      settled.forEach((r, idx) => {
+        if (r.status === 'fulfilled') {
+          const value: any = r.value;
+          if (Array.isArray(value.links)) allLinks.push(...value.links);
+          reportedTotal += value.totalLinks || (Array.isArray(value.links) ? value.links.length : 0);
+        } else {
+          // if a seed failed, append an error message but continue with others
+          console.warn('Crawl failed for seed', seeds[idx], r.reason);
+        }
+      });
+
+      // dedupe links
+      const unique = Array.from(new Set(allLinks));
+
+      setTotalLinks(unique.length);
       setLinks([]);
       setFetchedCount(0);
       setCrawling(false);
 
-      // Start fetching headers for each link
-      await fetchAllHeaders(data.links);
+      // Start fetching headers for unique links
+      await fetchAllHeaders(unique);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
       setLoading(false);
@@ -152,7 +195,13 @@ export default function Home() {
         <div className="bg-white rounded-lg shadow-lg p-8">
           <h1 className="text-4xl font-bold text-gray-800 mb-2">Link Crawler</h1>
           <p className="text-gray-600 mb-8">
-            Crawl a website, fetch all same-domain links, and analyze their headers
+            Crawl a website, fetch all same-domain links, and analyze their headers, caching status, and response times.  
+            <br/>
+            Enter one or more URLs to get started (e.g. Home, PLP, PDP). 
+            <br/>
+            You can also choose to capture the response body for HTML preview. 
+            <br/>
+            After crawling, download detailed CSV reports for further analysis. 
           </p>
 
           {/* Input Form */}
@@ -160,10 +209,10 @@ export default function Home() {
             <div className="space-y-4">
               <div className="flex gap-2">
                 <input
-                  type="url"
+                  type="text"
                   value={url}
                   onChange={(e) => setUrl(e.target.value)}
-                  placeholder="https://example.com"
+                  placeholder="https://example.com or multiple URLs separated by commas/spaces"
                   disabled={loading}
                   className="text-gray-800 flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-100"
                   required
@@ -274,7 +323,7 @@ export default function Home() {
                         <span className="text-gray-700">other status</span>
                       </div>
                       <div className="flex items-center gap-2">
-                        <span className="font-bold text-green-700">{cacheHit / (cacheHit + cacheMiss) * 100 || 0}%</span>
+                        <span className="font-bold text-green-700">{(cacheHit / (cacheHit + cacheMiss) * 100).toFixed(2) || 0}%</span>
                         <span className="text-gray-700">Cache Hit Rate</span>
                         {/* <span className="font-bold text-gray-700">{cacheMiss}</span>
                         <span className="text-gray-700">cache misses</span> */}

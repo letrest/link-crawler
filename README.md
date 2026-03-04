@@ -22,7 +22,6 @@ You can then download the CSV of the response headers (this file contains **only
 
 ## TO DO
 * Add a slider to add the ability to slow down the crawl in case we get blocked
-* Add the ability to deepcrawl?
 * Add query parameter caching test
 * Add the ability to wait for render in case links get pulled client-side
 * Add CRUX / pagespeed insights API for CWV?
