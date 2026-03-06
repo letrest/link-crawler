@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef } from 'react';
+import Image from 'next/image';
 import { 
   LinkData,
   generateCSV,
@@ -188,21 +189,49 @@ export default function Home() {
   // compute summary stats for rendering and downloads
   const summaryStats = computeSummaryStats(links, totalLinks);
   const { count200, count4xx, count5xx, countOther, cacheHit, cacheMiss, errors } = summaryStats;
+  const cacheHitRate = cacheHit + cacheMiss > 0 ? (cacheHit / (cacheHit + cacheMiss)) * 100 : 0;
+  const cacheHitRateDisplay = cacheHitRate.toFixed(2);
+  const cacheHitRateClass =
+    cacheHitRate > 80
+      ? 'bg-green-200 text-green-800'
+      : cacheHitRate < 40
+      ? 'bg-red-200 text-red-800'
+      : 'bg-yellow-200 text-yellow-800';
+
+  const avgResponseTime = links.length > 0 ? Math.round(links.reduce((sum, link) => sum + (link.responseTime || 0), 0) / links.length) : 0;
+  const avgResponseTimeClass =
+    avgResponseTime > 1000
+      ? 'bg-red-200 text-red-800'
+      : avgResponseTime < 300
+      ? 'bg-green-200 text-green-800'
+      : 'bg-orange-200 text-orange-800';
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-8">
       <div className="max-w-7xl mx-auto">
         <div className="bg-white rounded-lg shadow-lg p-8">
-          <h1 className="text-4xl font-bold text-gray-800 mb-2">Link Crawler</h1>
-          <p className="text-gray-600 mb-8">
-            Crawl a website, fetch all same-domain links, and analyze their headers, caching status, and response times.  
-            <br/>
-            Enter one or more URLs to get started (e.g. Home, PLP, PDP). 
-            <br/>
-            You can also choose to capture the response body for HTML preview. 
-            <br/>
-            After crawling, download detailed CSV reports for further analysis. 
-          </p>
+          <div className="mb-8 flex items-center gap-4">
+            <div className="">
+                <h1 className="text-4xl font-bold text-gray-800 mb-2">Crawler Monkey</h1>
+                <p className="text-gray-600 mb-8">
+                Crawls a website, fetches all same-domain links, and stores their response headers, showing the 4xx and 5xx errors, Cache Hit Rate and average response times.  
+                <br/>
+                Enter one or more URLs to get started (e.g. Home, PLP, PDP). 
+                <br/>
+                You can also choose to capture the response body for HTML preview. 
+                <br/>
+                After crawling, download a summary or detailed CSV reports for further analysis. 
+              </p>
+          </div>
+          <Image
+              src={"/crawler_monkey.png"}
+              alt="Crawler Monkey Logo"
+              className="rounded-full"
+              width="200"
+              height="200"
+            />
+          </div>
+
 
           {/* Input Form */}
           <form onSubmit={handleCrawl} className="mb-8">
@@ -284,57 +313,50 @@ export default function Home() {
               {/* Summary Section */}
               <h1 className="block text-2xl font-bold text-gray-800">Crawling Summary</h1>
               <div className="mb-6 flex flex-wrap gap-6 items-center">
-                {(() => {
-                  const avgResponseTime = links.length > 0 
-                    ? Math.round(links.reduce((sum, link) => sum + (link.responseTime || 0), 0) / links.length)
-                    : 0;
-                  return (
-                    <>
-                      <div className="flex items-center gap-2">
-                        <span className="font-bold text-green-700">{count200}</span>
-                        <span className="text-gray-700">/ {totalLinks} links are <span className="font-bold">200 OK</span></span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-bold text-yellow-700">{count4xx}</span>
-                        <span className="text-gray-700">/ {totalLinks} are <span className="font-bold">4xx Errors</span></span>
-                        {count4xx > 0 && (
-                          <details className="ml-2">
-                            <summary className="inline-flex items-center cursor-pointer text-blue-600 hover:underline">
-                              <span className="bg-yellow-200 text-yellow-800 rounded-full px-2 py-0.5 text-xs font-bold mr-1">i</span>
-                              Explanations
-                            </summary>
-                            <ul className="mt-2 bg-white border border-gray-200 rounded p-2 text-xs text-gray-700 max-w-xs">
-                              {errors.map((err, idx) => (
-                                <li key={idx} className="mb-1">
-                                  <span className="font-bold">{err.code}</span>: {err.text} <br />
-                                  <span className="text-gray-500">{err.url}</span>
-                                </li>
-                              ))}
-                            </ul>
-                          </details>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-bold text-red-700">{count5xx}</span>
-                        <span className="text-gray-700">/ {totalLinks} are <span className="font-bold">5xx Errors</span></span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-bold text-gray-700">{countOther}</span>
-                        <span className="text-gray-700">other status</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-bold text-green-700">{(cacheHit / (cacheHit + cacheMiss) * 100).toFixed(2) || 0}%</span>
-                        <span className="text-gray-700">Cache Hit Rate</span>
-                        {/* <span className="font-bold text-gray-700">{cacheMiss}</span>
-                        <span className="text-gray-700">cache misses</span> */}
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-bold text-blue-700">{avgResponseTime}ms</span>
-                        <span className="text-gray-700">avg response time</span>
-                      </div>
-                    </>
-                  );
-                })()}
+                <>
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-green-700">{count200}</span>
+                    <span className="text-gray-700">/ {totalLinks} links are <span className="font-bold">200 OK</span></span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-yellow-700">{count4xx}</span>
+                    <span className="text-gray-700">/ {totalLinks} are <span className="font-bold">4xx Errors</span></span>
+                    {count4xx > 0 && (
+                      <details className="ml-2">
+                        <summary className="inline-flex items-center cursor-pointer text-blue-600 hover:underline">
+                          <span className="bg-yellow-200 text-yellow-800 rounded-full px-2 py-0.5 text-xs font-bold mr-1">i</span>
+                          Explanations
+                        </summary>
+                        <ul className="mt-2 bg-white border border-gray-200 rounded p-2 text-xs text-gray-700 max-w-xs">
+                          {errors.map((err, idx) => (
+                            <li key={idx} className="mb-1">
+                              <span className="font-bold">{err.code}</span>: {err.text} <br />
+                              <span className="text-gray-500">{err.url}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-red-700">{count5xx}</span>
+                    <span className="text-gray-700">/ {totalLinks} are <span className="font-bold">5xx Errors</span></span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-gray-700">{countOther}</span>
+                    <span className="text-gray-700">other status</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className={`font-bold ${cacheHitRateClass}`}>{cacheHitRateDisplay}%</span>
+                    <span className="text-gray-700">Cache Hit Rate</span>
+                    {/* <span className="font-bold text-gray-700">{cacheMiss}</span>
+                    <span className="text-gray-700">cache misses</span> */}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className={`font-bold ${avgResponseTimeClass}`}>{avgResponseTime}ms</span>
+                    <span className="text-gray-700">Average Response Time</span>
+                  </div>
+                </>
               </div>
 
               {/* Results Table */}

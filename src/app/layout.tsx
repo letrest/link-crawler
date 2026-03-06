@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "A Link Crawler built with Next.js",
-  description: "Test the link headers and caching status of URLs",
+  title: "Crawler Monkey - Site Crawler and Header Analyzer",
+  description: "Test the response headers, timing, and caching status of URLs on a website. Enter one or more URLs to crawl and analyze their same-domain links. Download detailed CSV reports for further analysis.",
 };
 
 export default function RootLayout({
