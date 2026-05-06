@@ -342,6 +342,15 @@ export default function Home() {
       ? 'bg-green-200 text-green-800'
       : 'bg-orange-200 text-orange-800';
 
+  // Group errors by status code
+  const errorsByCode = errors.reduce((acc, err) => {
+    if (!acc[err.code]) {
+      acc[err.code] = 0;
+    }
+    acc[err.code]++;
+    return acc;
+  }, {} as Record<number, number>);
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-8">
       <div className="max-w-7xl mx-auto">
@@ -552,22 +561,40 @@ export default function Home() {
                       <details className="ml-2">
                         <summary className="inline-flex items-center cursor-pointer text-blue-600 hover:underline">
                           <span className="bg-yellow-200 text-yellow-800 rounded-full px-2 py-0.5 text-xs font-bold mr-1">i</span>
-                          Explanations
+                          Details
                         </summary>
-                        <ul className="mt-2 bg-white border border-gray-200 rounded p-2 text-xs text-gray-700 max-w-xs">
-                          {errors.map((err, idx) => (
-                            <li key={idx} className="mb-1">
-                              <span className="font-bold">{err.code}</span>: {err.text} <br />
-                              <span className="text-gray-500">{err.url}</span>
-                            </li>
-                          ))}
-                        </ul>
+                        <div className="mt-2 bg-white border border-gray-200 rounded p-2 text-xs text-gray-700 max-w-xs space-y-1">
+                          {Object.entries(errorsByCode)
+                            .filter(([code]) => parseInt(code) >= 400 && parseInt(code) < 500)
+                            .map(([code, count]) => (
+                              <div key={code} className="flex justify-between">
+                                <span><span className="font-semibold">{count}x</span> {code}</span>
+                              </div>
+                            ))}
+                        </div>
                       </details>
                     )}
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="font-bold text-red-700">{count5xx}</span>
                     <span className="text-gray-700">/ {totalLinks} are <span className="font-bold">5xx Errors</span></span>
+                    {count5xx > 0 && (
+                      <details className="ml-2">
+                        <summary className="inline-flex items-center cursor-pointer text-red-600 hover:underline">
+                          <span className="bg-red-200 text-red-800 rounded-full px-2 py-0.5 text-xs font-bold mr-1">i</span>
+                          Details
+                        </summary>
+                        <div className="mt-2 bg-white border border-red-200 rounded p-2 text-xs text-red-700 max-w-xs space-y-1">
+                          {Object.entries(errorsByCode)
+                            .filter(([code]) => parseInt(code) >= 500 && parseInt(code) < 600)
+                            .map(([code, count]) => (
+                              <div key={code} className="flex justify-between">
+                                <span><span className="font-semibold">{count}x</span> {code}</span>
+                              </div>
+                            ))}
+                        </div>
+                      </details>
+                    )}
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="font-bold text-gray-700">{countOther}</span>
