@@ -20,15 +20,21 @@ Then click Start Crawl.
 You can stop the crawl at any time by clicking the stop button and it will show you the results so far or you can wait for it to finish all of the links on the page.
 You can then download the CSV of the response headers (this file contains **only** the per-link rows). If you need the summary stats there is a separate "Download Summary" button that emits a smaller CSV with only the aggregated totals and errors.
 
+## Features Added
+* Get a 429, wait a bit? done with an exponential backoff wtih gradual recovery:
+* * First 429, check "Retry After" header and respect it if it exists.
+* * If no "Retry After" header, wait 5s and slow rate by adding 1s delay between GETs. Gradually recover speed by 10% after every 5 successful (non 429s)
+* * If no retry after and hit by another 429, increase the inital wait and the delay between GETs by 2x
+* * rinse, repeat
+* Manual Throttling slider [0-5s] by multiples of 10ms.
+* Adding a final crawl report that shows tital time spent and rate limit events
+
 ## TO DO
-* Add a slider to add the ability to slow down the crawl in case we get blocked
-* Get a 403, wait a bit?
 * Add query parameter caching test
 * Add the ability to wait for render in case links get pulled client-side?
 * Add CRUX / pagespeed insights API for CWV?
 * Add the ability to add request headers / and or cookies to get around being blocked
-
-## Learn More
+* Add security header checks
 
 
 

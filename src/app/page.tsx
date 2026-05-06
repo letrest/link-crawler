@@ -11,6 +11,12 @@ import {
   computeSummaryStats,
 } from '@/lib/utils';
 
+type ThrottlingEvent = {
+  type: 'retry-after' | 'backoff';
+  waitTime: number;
+  resumeDelay: number;
+};
+
 export default function Home() {
   const [url, setUrl] = useState('');
   const [loading, setLoading] = useState(false);
@@ -22,13 +28,24 @@ export default function Home() {
   const [error, setError] = useState('');
   const [captureBody, setCaptureBody] = useState(false);
   const [selectedBodyIndex, setSelectedBodyIndex] = useState<number | null>(null);
+  const [manualDelay, setManualDelay] = useState(0);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const [throttlingMessage, setThrottlingMessage] = useState('');
+  const [crawlStartTime, setCrawlStartTime] = useState<number | null>(null);
+  const [crawlEndTime, setCrawlEndTime] = useState<number | null>(null);
+  const [throttlingEvents, setThrottlingEvents] = useState<ThrottlingEvent[]>([]);
+  const [wasStopped, setWasStopped] = useState(false);
+  const [recoveryMessage, setRecoveryMessage] = useState('');
 
   const handleCrawl = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setLoading(true);
     setCrawling(true);
+    setCrawlStartTime(Date.now());
+    setCrawlEndTime(null);
+    setThrottlingEvents([]);
+    setWasStopped(false);
 
     try {
       // support multiple seed URLs separated by commas or whitespace
@@ -106,12 +123,29 @@ export default function Home() {
   const fetchAllHeaders = async (linkUrls: string[]) => {
     setFetchingInProgress(true);
     abortControllerRef.current = new AbortController();
+    setThrottlingMessage('');
+    setRecoveryMessage('');
+    setThrottlingEvents([]);
 
     const newLinks: LinkData[] = [];
+    const events: Array<{ type: 'retry-after' | 'backoff'; waitTime: number; resumeDelay: number }> = [];
+    const baselineDelay = manualDelay * 1000; // Convert to milliseconds
+    let currentDelay = baselineDelay; // Start with baseline
+    let backoffCount = 0; // Track backoff level for exponential calculation
+    let successfulRequestsSinceThrottle = 0; // Track recovery progress
+    let isRecovering = false; // Track if we're in recovery mode
+    let recoveryStartDelay = 0; // Remember the delay when recovery started
+
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
     for (let i = 0; i < linkUrls.length; i++) {
       if (abortControllerRef.current.signal.aborted) {
         break;
+      }
+
+      // Apply manual or adaptive delay
+      if (i > 0) {
+        await sleep(currentDelay);
       }
 
       const linkUrl = linkUrls[i];
@@ -127,6 +161,90 @@ export default function Home() {
         const responseTime = Math.round(endTime - startTime);
 
         const data = await response.json();
+
+        // Handle 429 (Too Many Requests) with intelligent backoff
+        if (data.status === 429) {
+          const retryAfter = data.headers?.['retry-after'] || data.headers?.['Retry-After'];
+          let waitTime = 0;
+          let additionalDelay = 0;
+          let statusMsg = '';
+          let eventType: 'retry-after' | 'backoff' = 'backoff';
+
+          if (retryAfter) {
+            // Use Retry-After header if available
+            const retryAfterMs = isNaN(parseInt(retryAfter))
+              ? new Date(retryAfter).getTime() - Date.now()
+              : parseInt(retryAfter) * 1000;
+            waitTime = Math.max(0, retryAfterMs);
+            additionalDelay = (backoffCount + 1) * 1000; // 1s, 2s, 3s, ... based on backoff count
+            statusMsg = `⏸️ Rate limited (429). Respecting Retry-After header: waiting ${(waitTime / 1000).toFixed(1)}s. Will resume at ${(additionalDelay / 1000).toFixed(1)}s delay between links.`;
+            eventType = 'retry-after';
+          } else {
+            // Exponential backoff: 5s, 10s, 20s, 40s, etc.
+            waitTime = 5000 * Math.pow(2, backoffCount);
+            additionalDelay = (backoffCount + 1) * 1000; // 1s, 2s, 3s, ... based on backoff count
+            statusMsg = `⏸️ Rate limited (429). Starting exponential backoff: pausing for ${(waitTime / 1000).toFixed(1)}s. Will resume at ${(additionalDelay / 1000).toFixed(1)}s delay between links.`;
+            eventType = 'backoff';
+            backoffCount++; // Increment for next 429
+          }
+
+          events.push({ type: eventType, waitTime, resumeDelay: additionalDelay });
+          setThrottlingEvents([...events]);
+          setThrottlingMessage(statusMsg);
+
+          // Pause and wait
+          if (waitTime > 0) {
+            console.log(`Rate limited (429). Waiting ${waitTime}ms before resuming...`);
+            await sleep(waitTime);
+          }
+
+          // Update the delay for future requests (apply backoff reduction)
+          if (currentDelay > 0) {
+            // Manual delay mode: apply 50% reduction on next 429
+            currentDelay = (currentDelay + additionalDelay) * 0.5;
+          } else {
+            // Automatic mode: use the additional delay
+            currentDelay = additionalDelay;
+            backoffCount = 0; // Reset for next backoff sequence
+          }
+
+          // Start recovery mode
+          isRecovering = true;
+          recoveryStartDelay = currentDelay;
+          successfulRequestsSinceThrottle = 0;
+          setRecoveryMessage('');
+
+          setThrottlingMessage('');
+        } else if (data.status === 200 || (data.status >= 300 && data.status < 429) || data.status > 429) {
+          // Successful or error response (not 429)
+          if (isRecovering && currentDelay > baselineDelay) {
+            successfulRequestsSinceThrottle++;
+            
+            // Gradually recover: reduce delay by 10% every 5 successful requests
+            if (successfulRequestsSinceThrottle % 5 === 0) {
+              const previousDelay = currentDelay;
+              currentDelay = Math.max(baselineDelay, currentDelay * 0.9);
+              const recoveryPercent = Math.round(((recoveryStartDelay - currentDelay) / (recoveryStartDelay - baselineDelay)) * 100);
+              setRecoveryMessage(`📈 Recovering speed... ${recoveryPercent}% (${successfulRequestsSinceThrottle} successful requests)`);
+            }
+
+            // Full recovery achieved
+            if (currentDelay <= baselineDelay + 1) { // +1 for floating point tolerance
+              currentDelay = baselineDelay;
+              isRecovering = false;
+              successfulRequestsSinceThrottle = 0;
+              setRecoveryMessage('✅ Speed fully recovered to baseline');
+              setTimeout(() => setRecoveryMessage(''), 3000); // Clear message after 3 seconds
+            }
+          } else {
+            // Not in recovery or already back to baseline
+            backoffCount = 0;
+            if (currentDelay === 0) {
+              currentDelay = 0;
+            }
+          }
+          setThrottlingMessage('');
+        }
 
         const hit = cacheHitConditions(data).some(Boolean);
 
@@ -160,6 +278,10 @@ export default function Home() {
 
     setFetchingInProgress(false);
     setLoading(false);
+    setThrottlingMessage('');
+    setCrawlEndTime(Date.now());
+    setThrottlingEvents([...events]);
+    setRecoveryMessage('');
   };
 
   const handleStop = () => {
@@ -167,6 +289,8 @@ export default function Home() {
       abortControllerRef.current.abort();
       setFetchingInProgress(false);
       setLoading(false);
+      setCrawlEndTime(Date.now());
+      setWasStopped(true);
     }
   };
 
@@ -203,6 +327,18 @@ export default function Home() {
     avgResponseTime > 1000
       ? 'bg-red-200 text-red-800'
       : avgResponseTime < 300
+      ? 'bg-green-200 text-green-800'
+      : 'bg-orange-200 text-orange-800';
+  
+  const medianResponseTime = links.length > 0 ? (() => {
+    const times = links.map(link => link.responseTime || 0).sort((a, b) => a - b);
+    const mid = Math.floor(times.length / 2);
+    return times.length % 2 !== 0 ? times[mid] : Math.round((times[mid - 1] + times[mid]) / 2);
+  })() : 0;
+  const medianResponseTimeClass =
+    medianResponseTime > 1000
+      ? 'bg-red-200 text-red-800'
+      : medianResponseTime < 300
       ? 'bg-green-200 text-green-800'
       : 'bg-orange-200 text-orange-800';
 
@@ -268,6 +404,37 @@ export default function Home() {
                   Capture response body (allows HTML preview)
                 </span>
               </label>
+
+              {/* Manual Delay Slider */}
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center gap-3">
+                  <label className="text-gray-700 font-medium">
+                    Manual Delay Between Requests: {(manualDelay * 100).toFixed(0)}ms
+                  </label>
+                  {manualDelay === 0 ? (
+                    <span className="inline-block px-3 py-1 bg-green-100 text-green-800 text-xs font-semibold rounded-full">
+                      🤖 Intelligent Throttling ON
+                    </span>
+                  ) : (
+                    <span className="inline-block px-3 py-1 bg-blue-100 text-blue-800 text-xs font-semibold rounded-full">
+                      ⚙️ Manual Throttling
+                    </span>
+                  )}
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="50"
+                  step="1"
+                  value={manualDelay * 10}
+                  onChange={(e) => setManualDelay(parseInt(e.target.value) / 10)}
+                  disabled={loading}
+                  className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                />
+                <p className="text-xs text-gray-500">
+                  Use this to manually throttle the crawl speed. Leave at 0ms for automatic intelligent speed control.
+                </p>
+              </div>
             </div>
           </form>
 
@@ -296,6 +463,18 @@ export default function Home() {
                 </div>
               </div>
 
+              {throttlingMessage && (
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-sm">
+                  {throttlingMessage}
+                </div>
+              )}
+
+              {recoveryMessage && (
+                <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-blue-800 text-sm">
+                  {recoveryMessage}
+                </div>
+              )}
+
               {fetchingInProgress && (
                 <button
                   onClick={handleStop}
@@ -303,6 +482,54 @@ export default function Home() {
                 >
                   Stop
                 </button>
+              )}
+            </div>
+          )}
+
+          {/* Crawl Report */}
+          {(crawlEndTime && !loading && !fetchingInProgress) && (
+            <div className="mb-8 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+              <h3 className="text-lg font-bold text-blue-900 mb-3">📊 Crawl Report</h3>
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <p className="text-blue-700 font-semibold">Total Time</p>
+                  <p className="text-blue-900">
+                    {crawlStartTime && crawlEndTime ? `${((crawlEndTime - crawlStartTime) / 1000).toFixed(1)}s` : 'N/A'}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-blue-700 font-semibold">Status</p>
+                  <p className="text-blue-900">
+                    {wasStopped ? '⏹️ Stopped' : '✅ Completed'}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-blue-700 font-semibold">Rate Limit Events</p>
+                  <p className="text-blue-900">{throttlingEvents.length} (429) encountered</p>
+                </div>
+                {throttlingEvents.length > 0 && (
+                  <div>
+                    <p className="text-blue-700 font-semibold">Pause Duration</p>
+                    <p className="text-blue-900">
+                      {(throttlingEvents.reduce((sum: number, e: ThrottlingEvent) => sum + e.waitTime, 0) / 1000).toFixed(1)}s total
+                    </p>
+                  </div>
+                )}
+              </div>
+              {throttlingEvents.length > 0 && (
+                <details className="mt-3 cursor-pointer">
+                  <summary className="text-blue-600 hover:text-blue-800 font-semibold">
+                    View Throttling Details ({throttlingEvents.length})
+                  </summary>
+                  <div className="mt-2 bg-white p-3 rounded border border-blue-200 space-y-2">
+                    {throttlingEvents.map((event: ThrottlingEvent, idx: number) => (
+                      <div key={idx} className="text-sm text-blue-800 py-1 border-b border-blue-100 last:border-b-0">
+                        <span className="font-semibold">Event {idx + 1}:</span> {event.type === 'retry-after' ? '⏸️ Retry-After' : '📈 Exponential Backoff'}
+                        {' '} - Paused {(event.waitTime / 1000).toFixed(1)}s, resumed at {(event.resumeDelay / 1000).toFixed(1)}s delay
+                      </div>
+                    ))}
+                  </div>
+                </details>
               )}
             </div>
           )}
@@ -355,6 +582,10 @@ export default function Home() {
                   <div className="flex items-center gap-2">
                     <span className={`font-bold ${avgResponseTimeClass}`}>{avgResponseTime}ms</span>
                     <span className="text-gray-700">Average Response Time</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className={`font-bold ${medianResponseTimeClass}`}>{medianResponseTime}ms</span>
+                    <span className="text-gray-700">Median Response Time</span>
                   </div>
                 </>
               </div>
@@ -461,8 +692,8 @@ export default function Home() {
                                   <dl className="space-y-1">
                                     {Object.entries(link.headers || {}).map(([key, value]) => (
                                       <div key={key} className="border-b border-gray-200 pb-1 last:border-b-0">
-                                        <dt className="font-semibold text-gray-700">{key}:</dt>
-                                        <dd className="text-gray-600 break-words text-xs ml-2">{value}</dd>
+                                        <dt className="font-semibold text-gray-700 inline">{key}:</dt>
+                                        <dd className="text-gray-600 break-words text-xs ml-2 inline">{value}</dd>
                                       </div>
                                     ))}
                                   </dl>
