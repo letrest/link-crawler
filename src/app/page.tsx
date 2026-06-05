@@ -4,6 +4,9 @@ import { useState, useRef } from 'react';
 import Image from 'next/image';
 import { 
   LinkData,
+  SecurityReport,
+  analyzeSecurityHeaders,
+  computeAggregateSecurityReport,
   generateCSV,
   generateSummaryCSV,
   downloadCSV,
@@ -36,6 +39,7 @@ export default function Home() {
   const [throttlingEvents, setThrottlingEvents] = useState<ThrottlingEvent[]>([]);
   const [wasStopped, setWasStopped] = useState(false);
   const [recoveryMessage, setRecoveryMessage] = useState('');
+  const [securitySummary, setSecuritySummary] = useState<SecurityReport | null>(null);
 
   const handleCrawl = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -45,6 +49,7 @@ export default function Home() {
     setCrawlStartTime(Date.now());
     setCrawlEndTime(null);
     setThrottlingEvents([]);
+    setSecuritySummary(null);
     setWasStopped(false);
 
     try {
@@ -89,22 +94,32 @@ export default function Home() {
 
       const settled = await Promise.allSettled(crawlPromises);
 
-      let allLinks: string[] = [];
+      const linkOrigins = new Map<string, { originPage: string; selector?: string; text?: string }>();
       let reportedTotal = 0;
 
       settled.forEach((r, idx) => {
         if (r.status === 'fulfilled') {
           const value: any = r.value;
-          if (Array.isArray(value.links)) allLinks.push(...value.links);
-          reportedTotal += value.totalLinks || (Array.isArray(value.links) ? value.links.length : 0);
+          if (Array.isArray(value.links)) {
+            value.links.forEach((link: any) => {
+              if (!linkOrigins.has(link.url)) {
+                linkOrigins.set(link.url, {
+                  originPage: link.originPage,
+                  selector: link.selector,
+                  text: link.text,
+                });
+              }
+            });
+            reportedTotal += value.totalLinks || value.links.length;
+          }
         } else {
           // if a seed failed, append an error message but continue with others
           console.warn('Crawl failed for seed', seeds[idx], r.reason);
         }
       });
 
-      // dedupe links
-      const unique = Array.from(new Set(allLinks));
+      // Get unique links
+      const unique = Array.from(linkOrigins.keys());
 
       setTotalLinks(unique.length);
       setLinks([]);
@@ -112,7 +127,7 @@ export default function Home() {
       setCrawling(false);
 
       // Start fetching headers for unique links
-      await fetchAllHeaders(unique);
+      await fetchAllHeaders(unique, linkOrigins);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
       setLoading(false);
@@ -120,7 +135,7 @@ export default function Home() {
     }
   };
 
-  const fetchAllHeaders = async (linkUrls: string[]) => {
+  const fetchAllHeaders = async (linkUrls: string[], linkOrigins: Map<string, { originPage: string; selector?: string; text?: string }>) => {
     setFetchingInProgress(true);
     abortControllerRef.current = new AbortController();
     setThrottlingMessage('');
@@ -247,6 +262,8 @@ export default function Home() {
         }
 
         const hit = cacheHitConditions(data).some(Boolean);
+        const securityReport = analyzeSecurityHeaders(data.headers || {});
+        const origin = linkOrigins.get(data.url);
 
         const linkData: LinkData = {
           url: data.url,
@@ -258,6 +275,10 @@ export default function Home() {
           body: data.body || undefined,
           error: data.error || '',
           responseTime,
+          securityReport,
+          originPage: origin?.originPage,
+          selector: origin?.selector,
+          linkText: origin?.text,
         };
 
         newLinks.push(linkData);
@@ -274,6 +295,7 @@ export default function Home() {
 
       setFetchedCount(i + 1);
       setLinks([...newLinks]);
+      setSecuritySummary(computeAggregateSecurityReport(newLinks.map((link) => link.securityReport!).filter(Boolean)));
     }
 
     setFetchingInProgress(false);
@@ -339,6 +361,51 @@ export default function Home() {
     medianResponseTime > 1000
       ? 'bg-red-200 text-red-800'
       : medianResponseTime < 300
+      ? 'bg-green-200 text-green-800'
+      : 'bg-orange-200 text-orange-800';
+
+  const median200ResponseTime = count200 > 0 ? (() => {
+    const times200 = links
+      .filter(link => link.status === 200)
+      .map(link => link.responseTime || 0)
+      .sort((a, b) => a - b);
+    const mid = Math.floor(times200.length / 2);
+    return times200.length % 2 !== 0 ? times200[mid] : Math.round((times200[mid - 1] + times200[mid]) / 2);
+  })() : 0;
+  const median200ResponseTimeClass =
+    median200ResponseTime > 1000
+      ? 'bg-red-200 text-red-800'
+      : median200ResponseTime < 300
+      ? 'bg-green-200 text-green-800'
+      : 'bg-orange-200 text-orange-800';
+
+  const medianCacheHitResponseTime = cacheHit > 0 ? (() => {
+    const timesCacheHit = links
+      .filter(link => link.hit === true)
+      .map(link => link.responseTime || 0)
+      .sort((a, b) => a - b);
+    const mid = Math.floor(timesCacheHit.length / 2);
+    return timesCacheHit.length % 2 !== 0 ? timesCacheHit[mid] : Math.round((timesCacheHit[mid - 1] + timesCacheHit[mid]) / 2);
+  })() : 0;
+  const medianCacheHitResponseTimeClass =
+    medianCacheHitResponseTime > 1000
+      ? 'bg-red-200 text-red-800'
+      : medianCacheHitResponseTime < 300
+      ? 'bg-green-200 text-green-800'
+      : 'bg-orange-200 text-orange-800';
+
+  const medianCacheMissResponseTime = cacheMiss > 0 ? (() => {
+    const timesCacheMiss = links
+      .filter(link => link.hit === false)
+      .map(link => link.responseTime || 0)
+      .sort((a, b) => a - b);
+    const mid = Math.floor(timesCacheMiss.length / 2);
+    return timesCacheMiss.length % 2 !== 0 ? timesCacheMiss[mid] : Math.round((timesCacheMiss[mid - 1] + timesCacheMiss[mid]) / 2);
+  })() : 0;
+  const medianCacheMissResponseTimeClass =
+    medianCacheMissResponseTime > 1000
+      ? 'bg-red-200 text-red-800'
+      : medianCacheMissResponseTime < 300
       ? 'bg-green-200 text-green-800'
       : 'bg-orange-200 text-orange-800';
 
@@ -606,6 +673,13 @@ export default function Home() {
                     {/* <span className="font-bold text-gray-700">{cacheMiss}</span>
                     <span className="text-gray-700">cache misses</span> */}
                   </div>
+                  {securitySummary && (
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-indigo-700">{securitySummary.grade}</span>
+                      <span className="text-gray-700">Security Headers Score</span>
+                      <span className="text-sm text-gray-500">({securitySummary.present}/{securitySummary.total} present)</span>
+                    </div>
+                  )}
                   <div className="flex items-center gap-2">
                     <span className={`font-bold ${avgResponseTimeClass}`}>{avgResponseTime}ms</span>
                     <span className="text-gray-700">Average Response Time</span>
@@ -614,8 +688,77 @@ export default function Home() {
                     <span className={`font-bold ${medianResponseTimeClass}`}>{medianResponseTime}ms</span>
                     <span className="text-gray-700">Median Response Time</span>
                   </div>
+                  {count200 > 0 && (
+                    <div className="flex items-center gap-2">
+                      <span className={`font-bold ${median200ResponseTimeClass}`}>{median200ResponseTime}ms</span>
+                      <span className="text-gray-700">Median Response Time (200 OK)</span>
+                    </div>
+                  )}
+                  {cacheHit > 0 && (
+                    <>
+                      <div className="flex items-center gap-2">
+                        <span className={`font-bold ${medianCacheHitResponseTimeClass}`}>{medianCacheHitResponseTime}ms</span>
+                        <span className="text-gray-700">Median Response Time (Cache Hits)</span>
+                      </div>
+                      {cacheMiss > 0 && (
+                        <div className="flex items-center gap-2">
+                          <span className={`font-bold ${medianCacheMissResponseTimeClass}`}>{medianCacheMissResponseTime}ms</span>
+                          <span className="text-gray-700">Median Response Time (Cache Misses)</span>
+                        </div>
+                      )}
+                    </>
+                  )}
                 </>
               </div>
+
+              {securitySummary && (
+                <div className="mb-6 p-4 bg-slate-50 border border-slate-200 rounded-lg">
+                  <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+                    <div>
+                      <h3 className="text-lg font-bold text-slate-900">Security Header Report</h3>
+                      <p className="text-sm text-slate-600">
+                        Scores the presence of essential 2026 security headers and explains what each protects against.
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-2xl font-bold text-slate-900">{securitySummary.grade}</span>
+                      <div className="text-sm text-slate-600">{securitySummary.score}%</div>
+                    </div>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="rounded-lg bg-white border border-slate-200 p-3">
+                      <p className="text-sm font-semibold text-slate-800">Headers Present</p>
+                      <p className="text-3xl font-bold text-slate-900">{securitySummary.present}</p>
+                    </div>
+                    <div className="rounded-lg bg-white border border-slate-200 p-3">
+                      <p className="text-sm font-semibold text-slate-800">Headers Missing</p>
+                      <p className="text-3xl font-bold text-red-700">{securitySummary.missing.length}</p>
+                    </div>
+                  </div>
+                  {securitySummary.missing.length > 0 && (
+                    <div className="mt-4">
+                      <p className="text-sm font-semibold text-slate-800 mb-2">Missing Headers</p>
+                      <div className="space-y-2">
+                        {securitySummary.missing.map((header) => (
+                          <div key={header.headerName} className="rounded-lg bg-white border border-red-100 p-3">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-semibold text-slate-900">{header.headerName}</span>
+                              <span className="text-xs font-semibold text-red-700 uppercase">{header.importance}</span>
+                            </div>
+                            <p className="text-sm text-slate-600 mt-1">{header.purpose}</p>
+                            <div className="mt-2 text-xs text-slate-500">
+                              Protects against: {header.protectsAgainst.join(', ')}
+                            </div>
+                            <div className="mt-2 text-xs text-slate-500">
+                              Recommended: <span className="font-semibold">{header.recommendedValue}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Results Table */}
               <div className="space-y-4">
@@ -649,6 +792,9 @@ export default function Home() {
                         <th className="px-4 py-2 text-center font-semibold text-gray-700">Cache Hit</th>
                         <th className="px-4 py-2 text-center font-semibold text-gray-700">Response Time (ms)</th>
                         <th className="px-4 py-2 text-left font-semibold text-gray-700">Headers</th>
+                        {links.some(link => (link.status >= 400 && link.status < 500 && link.status !== 429) || (link.status >= 500 && link.status < 600)) && (
+                          <th className="px-4 py-2 text-left font-semibold text-gray-700">Origin</th>
+                        )}
                         {captureBody && (
                           <th className="px-4 py-2 text-center font-semibold text-gray-700">Preview</th>
                         )}
@@ -733,6 +879,47 @@ export default function Home() {
                               <p className="text-red-600 font-semibold mt-2">{link.error}</p>
                             )}
                           </td>
+                          {links.some(link => (link.status >= 400 && link.status < 500 && link.status !== 429) || (link.status >= 500 && link.status < 600)) && (
+                            <td className="px-4 py-2 text-gray-600 text-xs">
+                              {((link.status >= 400 && link.status < 500 && link.status !== 429) || (link.status >= 500 && link.status < 600)) && link.originPage ? (
+                                <details className="cursor-pointer">
+                                  <summary className="font-semibold text-indigo-600 hover:text-indigo-700">
+                                    View Origin
+                                  </summary>
+                                  <div className="mt-2 bg-gray-50 p-2 rounded border border-gray-200">
+                                    <div className="space-y-1">
+                                      <div>
+                                        <span className="font-semibold text-gray-700">Page:</span>
+                                        <a
+                                          href={link.originPage}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="text-indigo-600 hover:underline ml-1 truncate max-w-xs inline-block"
+                                          title={link.originPage}
+                                        >
+                                          {link.originPage}
+                                        </a>
+                                      </div>
+                                      {link.selector && (
+                                        <div>
+                                          <span className="font-semibold text-gray-700">Selector:</span>
+                                          <code className="text-xs bg-gray-200 px-1 py-0.5 rounded ml-1">{link.selector}</code>
+                                        </div>
+                                      )}
+                                      {link.linkText && (
+                                        <div>
+                                          <span className="font-semibold text-gray-700">Text:</span>
+                                          <span className="text-gray-600 ml-1 italic">"{link.linkText}"</span>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                </details>
+                              ) : (
+                                <span className="text-gray-400">-</span>
+                              )}
+                            </td>
+                          )}
                           {captureBody && (
                             <td className="px-4 py-2 text-center">
                               {link.body ? (
